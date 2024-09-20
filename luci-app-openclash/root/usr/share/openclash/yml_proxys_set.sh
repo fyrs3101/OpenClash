@@ -35,8 +35,14 @@ if [ ! -z "$UPDATE_CONFIG_FILE" ]; then
 fi
 
 if [ -z "$CONFIG_FILE" ]; then
-	CONFIG_FILE="/etc/openclash/config/$(ls -lt /etc/openclash/config/ | grep -E '.yaml|.yml' | head -n 1 |awk '{print $9}')"
-	CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+  for file_name in /etc/openclash/config/*
+   do
+      if [ -f "$file_name" ]; then
+         CONFIG_FILE=$file_name
+         CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+         break
+      fi
+   done
 fi
 
 if [ -z "$CONFIG_NAME" ]; then
@@ -62,6 +68,7 @@ yml_other_rules_del()
 yml_proxy_provider_set()
 {
    local section="$1"
+   local enabled config type name path provider_filter provider_url provider_interval health_check health_check_url health_check_interval other_parameters
    config_get_bool "enabled" "$section" "enabled" "1"
    config_get "config" "$section" "config" ""
    config_get "type" "$section" "type" ""
@@ -73,6 +80,7 @@ yml_proxy_provider_set()
    config_get "health_check" "$section" "health_check" ""
    config_get "health_check_url" "$section" "health_check_url" ""
    config_get "health_check_interval" "$section" "health_check_interval" ""
+   config_get "other_parameters" "$section" "other_parameters" ""
    
    if [ "$enabled" = "0" ]; then
       return
@@ -109,7 +117,8 @@ yml_proxy_provider_set()
       if [ -n "$(grep -w "path: $path" "$PROXY_PROVIDER_FILE" 2>/dev/null)" ]; then
          return
       elif [ "$(grep -w "^$name$" "$proxy_provider_name" |wc -l 2>/dev/null)" -ge 2 ] && [ -z "$(grep -w "path: $path" "$PROXY_PROVIDER_FILE" 2>/dev/null)" ]; then
-      	 sed -i "1,/^${name}$/{//d}" "$proxy_provider_name" 2>/dev/null
+      	 convert_name=$(echo "$name" |sed 's/\//\\\//g' 2>/dev/null)
+         sed -i "1,/^${convert_name}$/{//d}" "$proxy_provider_name" 2>/dev/null
          return
       fi
    fi
@@ -140,6 +149,10 @@ cat >> "$PROXY_PROVIDER_FILE" <<-EOF
       interval: $health_check_interval
 EOF
 
+#other_parameters
+   if [ -n "$other_parameters" ]; then
+      echo -e "$other_parameters" >> "$PROXY_PROVIDER_FILE"
+   fi
 }
 
 set_alpn()
@@ -238,6 +251,7 @@ yml_servers_set()
    config_get "vless_flow" "$section" "vless_flow" ""
    config_get "http_headers" "$section" "http_headers" ""
    config_get "hysteria_protocol" "$section" "hysteria_protocol" ""
+   config_get "hysteria2_protocol" "$section" "hysteria2_protocol" ""
    config_get "hysteria_up" "$section" "hysteria_up" ""
    config_get "hysteria_down" "$section" "hysteria_down" ""
    config_get "hysteria_alpn" "$section" "hysteria_alpn" ""
@@ -296,6 +310,7 @@ yml_servers_set()
    config_get "multiplex_statistic" "$section" "multiplex_statistic" ""
    config_get "multiplex_only_tcp" "$section" "multiplex_only_tcp" ""
    config_get "other_parameters" "$section" "other_parameters" ""
+   config_get "hysteria_obfs_password" "$section" "hysteria_obfs_password" ""
 
    if [ "$enabled" = "0" ]; then
       return
@@ -342,7 +357,8 @@ yml_servers_set()
       if [ -n "$(grep -w "name: \"$name\"" "$SERVER_FILE" 2>/dev/null)" ]; then
          return
       elif [ "$(grep -w "^$name$" "$servers_name" |wc -l 2>/dev/null)" -ge 2 ] && [ -z "$(grep -w "name: \"$name\"" "$SERVER_FILE" 2>/dev/null)" ]; then
-      	 sed -i "1,/^${name}$/{//d}" "$servers_name" 2>/dev/null
+      	 convert_name=$(echo "$name" |sed 's/\//\\\//g' 2>/dev/null)
+         sed -i "1,/^${convert_name}$/{//d}" "$servers_name" 2>/dev/null
          return
       fi
    fi
@@ -902,6 +918,90 @@ EOF
       fi
    fi
 
+#hysteria2
+   if [ "$type" = "hysteria2" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+  - name: "$name"
+    type: $type
+    server: "$server"
+    port: $port
+    password: "$password"
+EOF
+      if [ -n "$hysteria_up" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    up: "$hysteria_up"
+EOF
+      fi
+      if [ -n "$hysteria_down" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    down: "$hysteria_down"
+EOF
+      fi
+      if [ -n "$skip_cert_verify" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    skip-cert-verify: $skip_cert_verify
+EOF
+      fi
+      if [ -n "$sni" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    sni: "$sni"
+EOF
+      fi
+      if [ -n "$hysteria_alpn" ]; then
+         if [ -z "$(echo $hysteria_alpn |grep ' ')" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    alpn: 
+      - "$hysteria_alpn"
+EOF
+         else
+cat >> "$SERVER_FILE" <<-EOF
+    alpn:
+EOF
+      config_list_foreach "$section" "hysteria_alpn" set_alpn
+         fi
+      fi
+      if [ -n "$hysteria_obfs" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    obfs: "$hysteria_obfs"
+EOF
+      fi
+      if [ -n "$hysteria_obfs_password" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    obfs-password: "$hysteria_obfs_password"
+EOF
+      fi
+      if [ -n "$hysteria_ca" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    ca: "$hysteria_ca"
+EOF
+      fi
+      if [ -n "$hysteria_ca_str" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    ca-str: "$hysteria_ca_str"
+EOF
+      fi
+      if [ -n "$fingerprint" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    fingerprint: "$fingerprint"
+EOF
+      fi
+      if [ -n "$ports" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    ports: $ports
+EOF
+      fi
+     if [ -n "$hysteria2_protocol" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    protocol: $hysteria2_protocol
+EOF
+      fi
+      if [ -n "$hop_interval" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    hop-interval: $hop_interval
+EOF
+      fi
+   fi
+
 #vless
    if [ "$type" = "vless" ]; then
 cat >> "$SERVER_FILE" <<-EOF
@@ -1276,6 +1376,7 @@ EOF
 new_servers_group_set()
 {
    local section="$1"
+   local enabled name
    config_get_bool "enabled" "$section" "enabled" "1"
    config_get "name" "$section" "name" ""
    
@@ -1294,6 +1395,7 @@ new_servers_group_set()
 yml_servers_name_get()
 {
 	 local section="$1"
+   local name
    config_get "name" "$section" "name" ""
    [ ! -z "$name" ] && {
       echo "$name" >>"$servers_name"
@@ -1303,6 +1405,7 @@ yml_servers_name_get()
 yml_proxy_provider_name_get()
 {
 	 local section="$1"
+   local name
    config_get "name" "$section" "name" ""
    [ ! -z "$name" ] && {
       echo "$name" >>"$proxy_provider_name"
@@ -1346,105 +1449,7 @@ fi
 rm -rf $servers_name
 
 #一键创建配置文件
-if [ "$rule_sources" = "ConnersHua" ] && [ "$servers_if_update" != "1" ] && [ -z "$if_game_proxy" ]; then
-LOG_OUT "Creating By Using Connershua (rule set) Rules..."
-echo "proxy-groups:" >>$SERVER_FILE
-cat >> "$SERVER_FILE" <<-EOF
-  - name: Auto - UrlTest
-    type: url-test
-EOF
-if [ -f "/tmp/Proxy_Server" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    proxies:
-EOF
-fi
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-    url: http://cp.cloudflare.com/generate_204
-    interval: "600"
-    tolerance: "150"
-  - name: Proxy
-    type: select
-    proxies:
-      - Auto - UrlTest
-      - DIRECT
-EOF
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-  - name: Domestic
-    type: select
-    proxies:
-      - DIRECT
-      - Proxy
-  - name: Others
-    type: select
-    proxies:
-      - Proxy
-      - DIRECT
-      - Domestic
-  - name: Asian TV
-    type: select
-    proxies:
-      - DIRECT
-      - Proxy
-EOF
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-  - name: Global TV
-    type: select
-    proxies:
-      - Proxy
-      - DIRECT
-EOF
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-config_load "openclash"
-config_foreach yml_other_rules_del "other_rules" "$CONFIG_NAME" "ConnersHua"
-uci_name_tmp=$(uci -q add openclash other_rules)
-uci_set="uci -q set openclash.$uci_name_tmp."
-${UCI_SET}rule_source="1"
-${uci_set}enable="1"
-${uci_set}rule_name="ConnersHua"
-${uci_set}config="$CONFIG_NAME"
-${uci_set}GlobalTV="Global TV"
-${uci_set}AsianTV="Asian TV"
-${uci_set}Proxy="Proxy"
-${uci_set}AdBlock="AdBlock"
-${uci_set}Domestic="Domestic"
-${uci_set}Others="Others"
-
-[ "$config_auto_update" -eq 1 ] && [ "$new_servers_group_set" -eq 1 ] && {
-	${UCI_SET}servers_update="1"
-	${UCI_DEL_LIST}="all" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Auto - UrlTest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Auto - UrlTest" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Proxy" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Proxy" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Asian TV" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Asian TV" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Global TV" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Global TV" >/dev/null 2>&1
-}
-elif [ "$rule_sources" = "lhie1" ] && [ "$servers_if_update" != "1" ] && [ -z "$if_game_proxy" ]; then
+if [ "$rule_sources" = "lhie1" ] && [ "$servers_if_update" != "1" ] && [ -z "$if_game_proxy" ]; then
 LOG_OUT "Creating By Using lhie1 Rules..."
 echo "proxy-groups:" >>$SERVER_FILE
 cat >> "$SERVER_FILE" <<-EOF
@@ -1499,7 +1504,7 @@ cat >> "$SERVER_FILE" <<-EOF
       - Proxy
 EOF
 cat >> "$SERVER_FILE" <<-EOF
-  - name: ChatGPT
+  - name: OpenAI
     type: select
     proxies:
       - Proxy
@@ -1758,6 +1763,15 @@ cat >> "$SERVER_FILE" <<-EOF
       - REJECT
       - DIRECT
       - Proxy
+EOF
+cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
+if [ -f "/tmp/Proxy_Provider" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    use:
+EOF
+fi
+cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
+cat >> "$SERVER_FILE" <<-EOF
   - name: Asian TV
     type: select
     proxies:
@@ -1877,7 +1891,7 @@ ${uci_set}AppleTV="Apple TV"
 ${uci_set}GoogleFCM="Google FCM"
 ${uci_set}Scholar="Scholar"
 ${uci_set}Microsoft="Microsoft"
-${uci_set}ChatGPT="ChatGPT"
+${uci_set}OpenAI="OpenAI"
 ${uci_set}Netflix="Netflix"
 ${uci_set}Discovery="Discovery Plus"
 ${uci_set}DAZN="DAZN"
@@ -1910,7 +1924,7 @@ ${uci_set}Others="Others"
 	${UCI_DEL_LIST}="Netflix" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Netflix" >/dev/null 2>&1
 	${UCI_DEL_LIST}="Discovery Plus" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Discovery Plus" >/dev/null 2>&1
 	${UCI_DEL_LIST}="DAZN" >/dev/null 2>&1 && ${UCI_ADD_LIST}="DAZN" >/dev/null 2>&1
-  ${UCI_DEL_LIST}="ChatGPT" >/dev/null 2>&1 && ${UCI_ADD_LIST}="ChatGPT" >/dev/null 2>&1
+  ${UCI_DEL_LIST}="OpenAI" >/dev/null 2>&1 && ${UCI_ADD_LIST}="OpenAI" >/dev/null 2>&1
   ${UCI_DEL_LIST}="Apple TV" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Apple TV" >/dev/null 2>&1
 	${UCI_DEL_LIST}="Google FCM" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Google FCM" >/dev/null 2>&1
 	${UCI_DEL_LIST}="Scholar" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Scholar" >/dev/null 2>&1
@@ -1924,65 +1938,6 @@ ${uci_set}Others="Others"
 	${UCI_DEL_LIST}="PayPal" >/dev/null 2>&1 && ${UCI_ADD_LIST}="PayPal" >/dev/null 2>&1
 	${UCI_DEL_LIST}="Speedtest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Speedtest" >/dev/null 2>&1
   ${UCI_DEL_LIST}="Others" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Others" >/dev/null 2>&1
-}
-elif [ "$rule_sources" = "ConnersHua_return" ] && [ "$servers_if_update" != "1" ] && [ -z "$if_game_proxy" ]; then
-LOG_OUT "Creating By Using ConnersHua Return Rules..."
-echo "proxy-groups:" >>$SERVER_FILE
-cat >> "$SERVER_FILE" <<-EOF
-  - name: Auto - UrlTest
-    type: url-test
-EOF
-if [ -f "/tmp/Proxy_Server" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    proxies:
-EOF
-fi
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-    url: http://cp.cloudflare.com/generate_204
-    interval: "600"
-    tolerance: "150"
-  - name: Proxy
-    type: select
-    proxies:
-      - Auto - UrlTest
-      - DIRECT
-EOF
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-    use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-  - name: Others
-    type: select
-    proxies:
-      - Proxy
-      - DIRECT
-EOF
-config_load "openclash"
-config_foreach yml_other_rules_del "other_rules" "$CONFIG_NAME" "ConnersHua_return"
-uci_name_tmp=$(uci -q add openclash other_rules)
-uci_set="uci -q set openclash.$uci_name_tmp."
-${UCI_SET}rule_source="1"
-${uci_set}enable="1"
-${uci_set}rule_name="ConnersHua_return"
-${uci_set}config="$CONFIG_NAME"
-${uci_set}Proxy="Proxy"
-${uci_set}Others="Others"
-[ "$config_auto_update" -eq 1 ] && [ "$new_servers_group_set" -eq 1 ] && {
-	${UCI_SET}servers_update="1"
-	${UCI_DEL_LIST}="all" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Auto - UrlTest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Auto - UrlTest" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Proxy" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Proxy" >/dev/null 2>&1
 }
 fi
 

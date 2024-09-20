@@ -32,10 +32,6 @@ function index()
 	entry({"admin", "services", "openclash", "coreupdate"},call("action_coreupdate"))
 	entry({"admin", "services", "openclash", "flush_fakeip_cache"}, call("action_flush_fakeip_cache"))
 	entry({"admin", "services", "openclash", "download_rule"}, call("action_download_rule"))
-	entry({"admin", "services", "openclash", "download_netflix_domains"}, call("action_download_netflix_domains"))
-	entry({"admin", "services", "openclash", "download_disney_domains"}, call("action_download_disney_domains"))
-	entry({"admin", "services", "openclash", "catch_netflix_domains"}, call("action_catch_netflix_domains"))
-	entry({"admin", "services", "openclash", "write_netflix_domains"}, call("action_write_netflix_domains"))
 	entry({"admin", "services", "openclash", "restore"}, call("action_restore_config"))
 	entry({"admin", "services", "openclash", "backup"}, call("action_backup"))
 	entry({"admin", "services", "openclash", "backup_ex_core"}, call("action_backup_ex_core"))
@@ -74,6 +70,8 @@ function index()
 	entry({"admin", "services", "openclash", "manual_stream_unlock_test"}, call("manual_stream_unlock_test"))
 	entry({"admin", "services", "openclash", "all_proxies_stream_test"}, call("all_proxies_stream_test"))
 	entry({"admin", "services", "openclash", "set_subinfo_url"}, call("set_subinfo_url"))
+	entry({"admin", "services", "openclash", "check_core"}, call("action_check_core"))
+	entry({"admin", "services", "openclash", "core_download"}, call("core_download"))
 	entry({"admin", "services", "openclash", "settings"},cbi("openclash/settings"),_("Plugin Settings"), 30).leaf = true
 	entry({"admin", "services", "openclash", "config-overwrite"},cbi("openclash/config-overwrite"),_("Overwrite Settings"), 40).leaf = true
 	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),_("Onekey Create"), 50).leaf = true
@@ -101,18 +99,17 @@ local json = require "luci.jsonc"
 local uci = require("luci.model.uci").cursor()
 local datatype = require "luci.cbi.datatypes"
 local opkg
+local device_name = uci:get("system", "@system[0]", "hostname")
+local device_arh = luci.sys.exec("uname -m |tr -d '\n'")
+
 if pcall(require, "luci.model.ipkg") then
 	opkg = require "luci.model.ipkg"
 end
 
 local core_path_mode = uci:get("openclash", "config", "small_flash_memory")
 if core_path_mode ~= "1" then
-	dev_core_path="/etc/openclash/core/clash"
-	tun_core_path="/etc/openclash/core/clash_tun"
 	meta_core_path="/etc/openclash/core/clash_meta"
 else
-	dev_core_path="/tmp/etc/openclash/core/clash"
-	tun_core_path="/tmp/etc/openclash/core/clash_tun"
 	meta_core_path="/tmp/etc/openclash/core/clash_meta"
 end
 
@@ -122,10 +119,6 @@ end
 
 local function is_web()
 	return luci.sys.call("pidof clash >/dev/null") == 0
-end
-
-local function restricted_mode()
-	return uci:get("openclash", "config", "restricted_mode")
 end
 
 local function is_watchdog()
@@ -156,14 +149,6 @@ local function lhie1()
 	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/usr/share/openclash/res/lhie1.yaml"))
 end
 
-local function ConnersHua()
-	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/usr/share/openclash/res/ConnersHua.yaml"))
-end
-
-local function ConnersHua_return()
-	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/usr/share/openclash/res/ConnersHua_return.yaml"))
-end
-
 local function chnroute()
 	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/etc/openclash/china_ip_route.ipset"))
 end
@@ -173,7 +158,13 @@ local function chnroutev6()
 end
 
 local function daip()
-	local daip = luci.sys.exec("uci -q get network.lan.ipaddr |awk -F '/' '{print $1}' 2>/dev/null |tr -d '\n'")
+	local daip, lan_int_name
+	lan_int_name = uci:get("openclash", "config", "lan_interface_name") or "0"
+	if lan_int_name == "0" then
+		daip = luci.sys.exec("uci -q get network.lan.ipaddr |awk -F '/' '{print $1}' 2>/dev/null |tr -d '\n'")
+	else
+		daip = luci.sys.exec(string.format("ip address show %s | grep -w 'inet'  2>/dev/null |grep -Eo 'inet [0-9\.]+' | awk '{print $2}' | tr -d '\n'", lan_int_name))
+	end
 	if not daip or daip == "" then
 		daip = luci.sys.exec("ip address show $(uci -q -p /tmp/state get network.lan.ifname || uci -q -p /tmp/state get network.lan.device) | grep -w 'inet'  2>/dev/null |grep -Eo 'inet [0-9\.]+' | awk '{print $2}' | tr -d '\n'")
 	end
@@ -229,19 +220,11 @@ local function coremodel()
 	end
 end
 
-local function corecv()
-	if not nixio.fs.access(dev_core_path) then
+local function check_core()
+	if not nixio.fs.access(meta_core_path) then
 		return "0"
 	else
-		return luci.sys.exec(string.format("%s -v 2>/dev/null |awk -F ' ' '{print $2}'", dev_core_path))
-	end
-end
-
-local function coretuncv()
-	if not nixio.fs.access(tun_core_path) then
-		return "0"
-	else
-		return luci.sys.exec(string.format("%s -v 2>/dev/null |awk -F ' ' '{print $2}'", tun_core_path))
+		return "1"
 	end
 end
 
@@ -255,10 +238,8 @@ end
 
 local function corelv()
 	luci.sys.call("bash /usr/share/openclash/clash_version.sh")
-	local core_lv = luci.sys.exec("sed -n 1p /tmp/clash_last_version 2>/dev/null")
-	local core_tun_lv = luci.sys.exec("sed -n 2p /tmp/clash_last_version 2>/dev/null")
 	local core_meta_lv = luci.sys.exec("sed -n 3p /tmp/clash_last_version 2>/dev/null")
-	return core_lv .. "," .. core_tun_lv .. "," .. core_meta_lv
+	return core_meta_lv
 end
 
 local function opcv()
@@ -334,19 +315,21 @@ local function historychecktime()
 	end
 end
 
+function core_download()
+	local cdn_url = luci.http.formvalue("url")
+	if cdn_url then
+		luci.sys.call(string.format("rm -rf /tmp/clash_last_version 2>/dev/null && bash /usr/share/openclash/clash_version.sh '%s' >/dev/null 2>&1", cdn_url))
+		luci.sys.call(string.format("bash /usr/share/openclash/openclash_core.sh 'Meta' '%s' >/dev/null 2>&1 &", cdn_url))
+	else
+		luci.sys.call("rm -rf /tmp/clash_last_version 2>/dev/null && bash /usr/share/openclash/clash_version.sh >/dev/null 2>&1")
+		luci.sys.call("bash /usr/share/openclash/openclash_core.sh 'Meta' >/dev/null 2>&1 &")
+	end
+
+end
+
 function download_rule()
 	local filename = luci.http.formvalue("filename")
 	local state = luci.sys.call(string.format('/usr/share/openclash/openclash_download_rule_list.sh "%s" >/dev/null 2>&1',filename))
-	return state
-end
-
-function download_disney_domains()
-	local state = luci.sys.call(string.format('/usr/share/openclash/openclash_download_rule_list.sh "%s" >/dev/null 2>&1',"disney_domains"))
-	return state
-end
-
-function download_netflix_domains()
-	local state = luci.sys.call(string.format('/usr/share/openclash/openclash_download_rule_list.sh "%s" >/dev/null 2>&1',"netflix_domains"))
 	return state
 end
 
@@ -375,7 +358,6 @@ function action_restore_config()
 	luci.sys.call("cp /usr/share/openclash/backup/openclash_sniffing* /etc/openclash/custom/ >/dev/null 2>&1 &")
 	luci.sys.call("cp /usr/share/openclash/backup/yml_change.sh /usr/share/openclash/yml_change.sh >/dev/null 2>&1 &")
 	luci.sys.call("rm -rf /etc/openclash/history/* >/dev/null 2>&1 &")
-	luci.http.redirect(luci.dispatcher.build_url('admin/services/openclash/settings'))
 end
 
 function action_remove_all_core()
@@ -383,7 +365,12 @@ function action_remove_all_core()
 end
 
 function action_one_key_update()
-  return luci.sys.call("bash /usr/share/openclash/openclash_update.sh 'one_key_update' >/dev/null 2>&1 &")
+	local cdn_url = luci.http.formvalue("url")
+	if cdn_url then
+		return luci.sys.call(string.format("rm -rf /tmp/*_last_version 2>/dev/null && bash /usr/share/openclash/openclash_update.sh 'one_key_update' '%s' >/dev/null 2>&1 &", cdn_url))
+	else
+		return luci.sys.call("rm -rf /tmp/*_last_version 2>/dev/null && bash /usr/share/openclash/openclash_update.sh 'one_key_update' >/dev/null 2>&1 &")
+	end
 end
 
 local function dler_login_info_save()
@@ -627,7 +614,7 @@ function set_subinfo_url()
 end
 
 function sub_info_get()
-	local filepath, filename, sub_url, sub_info, info, upload, download, total, expire, http_code, len, percent, day_left, day_expire
+	local filepath, filename, sub_url, sub_info, info, upload, download, total, expire, http_code, len, percent, day_left, day_expire, surplus, used
 	local info_tb = {}
 	filename = luci.http.formvalue("filename")
 	sub_info = ""
@@ -678,7 +665,6 @@ function sub_info_get()
 						else
 							day_left = 0
 						end
-						
 						if used and total and used < total then
 							percent = string.format("%.1f",((total-used)/total)*100) or nil
 						elseif used == nil or total == nil or total == 0 then
@@ -686,6 +672,7 @@ function sub_info_get()
 						else
 							percent = 0
 						end
+						surplus = fs.filesize(total - used) or "null"
 						total = fs.filesize(total) or "null"
 						used = fs.filesize(used) or "null"
 						sub_info = "Successful"
@@ -700,6 +687,7 @@ function sub_info_get()
 	luci.http.write_json({
 		http_code = http_code,
 		sub_info = sub_info,
+		surplus = surplus,
 		used = used,
 		total = total,
 		percent = percent,
@@ -714,7 +702,7 @@ function action_rule_mode()
 		local daip = daip()
 		local dase = dase() or ""
 		local cn_port = cn_port()
-		core_type = uci:get("openclash", "config", "core_type") or "Dev"
+		core_type = uci:get("openclash", "config", "core_type") or "Meta"
 		if not daip or not cn_port then return end
 		info = json.parse(luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XGET http://"%s":"%s"/configs', dase, daip, cn_port)))
 		if info then
@@ -736,9 +724,7 @@ function action_switch_rule_mode()
 		local daip = daip()
 		local dase = dase() or ""
 		local cn_port = cn_port()
-		local core_type = uci:get("openclash", "config", "core_type") or "Dev"
 		mode = luci.http.formvalue("rule_mode")
-		if mode == script and core_type ~= "TUN" then luci.http.status(500, "Switch Faild") return end
 		if not daip or not cn_port then luci.http.status(500, "Switch Faild") return end
 		info = luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XPATCH http://"%s":"%s"/configs -d \'{\"mode\": \"%s\"}\'', dase, daip, cn_port, mode))
 		if info ~= "" then
@@ -875,7 +861,7 @@ function action_toolbar_show()
 		if not daip or not cn_port then return end
 		traffic = json.parse(luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XGET http://"%s":"%s"/traffic', dase, daip, cn_port)))
 		connections = json.parse(luci.sys.exec(string.format('curl -sL -m 3 -H "Content-Type: application/json" -H "Authorization: Bearer %s" -XGET http://"%s":"%s"/connections', dase, daip, cn_port)))
-		if traffic and connections then
+		if traffic and connections and connections.connections then
 			connection = #(connections.connections)
 			up = s(traffic.up)
 			down = s(traffic.down)
@@ -994,7 +980,7 @@ function action_switch_dashboard()
 			uci:set("openclash", "config", "dashboard_type", "Meta")
 			uci:commit("openclash")
 		end
-	elseif tonumber(state) == 1 then
+	elseif switch_name == "Yacd" and tonumber(state) == 1 then
 		if switch_type == "Official" then
 			uci:set("openclash", "config", "yacd_type", "Official")
 			uci:commit("openclash")
@@ -1044,7 +1030,7 @@ function action_status()
 		db_forward_ssl = db_foward_ssl(),
 		web = is_web(),
 		cn_port = cn_port(),
-		restricted_mode = restricted_mode();
+		core_type = uci:get("openclash", "config", "core_type") or "Meta";
 	})
 end
 
@@ -1052,8 +1038,6 @@ function action_state()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		lhie1 = lhie1(),
-		ConnersHua = ConnersHua(),
-		ConnersHua_return = ConnersHua_return(),
 		ipdb = ipdb(),
 		geosite = geosite(),
 		historychecktime = historychecktime(),
@@ -1079,8 +1063,6 @@ end
 function action_update()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
-			corecv = corecv(),
-			coretuncv = coretuncv(),
 			coremetacv = coremetacv(),
 			coremodel = coremodel(),
 			opcv = opcv(),
@@ -1111,6 +1093,13 @@ function action_opupdate()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 			opup = opup();
+	})
+end
+
+function action_check_core()
+	luci.http.prepare_content("application/json")
+	luci.http.write_json({
+			core_status = check_core();
 	})
 end
 
@@ -1150,20 +1139,6 @@ function action_download_rule()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		rule_download_status = download_rule();
-	})
-end
-
-function action_download_netflix_domains()
-	luci.http.prepare_content("application/json")
-	luci.http.write_json({
-		rule_download_status = download_netflix_domains();
-	})
-end
-
-function action_download_disney_domains()
-	luci.http.prepare_content("application/json")
-	luci.http.write_json({
-		rule_download_status = download_disney_domains();
 	})
 end
 
@@ -1281,38 +1256,6 @@ function split(str,delimiter)
 	return arr
 end
 
-function action_write_netflix_domains()
-	local domains = luci.http.formvalue("domains")
-	local dustom_file = "/etc/openclash/custom/openclash_custom_netflix_domains.list"
-	local file = io.open(dustom_file, "a+")
-	file:seek("set")
-	local domain = file:read("*a")
-	for v, k in pairs(split(domains,"\n")) do
-		if not string.find(domain,k,1,true) then
-			file:write(k.."\n")
-		end
-	end
-	file:close()
-	return
-end
-
-function action_catch_netflix_domains()
-	local cmd = "/usr/share/openclash/openclash_debug_getcon.lua 'netflix-nflxvideo'"
-	luci.http.prepare_content("text/plain")
-	local util = io.popen(cmd)
-	if util and util ~= "" then
-		while true do
-			local ln = util:read("*l")
-			if not ln then break end
-			luci.http.write(ln)
-			luci.http.write(",")
-		end
-		util:close()
-		return
-	end
-	luci.http.status(500, "Bad address")
-end
-
 function action_diag_connection()
 	local addr = luci.http.formvalue("addr")
 	if addr and (datatype.hostname(addr) or datatype.ipaddr(addr)) then
@@ -1380,12 +1323,13 @@ function action_backup()
 	local reader = ltn12_popen("tar -C '/etc/openclash/' -cz . 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
 	luci.ltn12.pump.all(reader, luci.http.write)
+	luci.sys.call("rm -rf /etc/openclash/openclash >/dev/null 2>&1")
 end
 
 function action_backup_ex_core()
@@ -1393,21 +1337,21 @@ function action_backup_ex_core()
 	local reader = ltn12_popen("echo 'core' > /tmp/oc_exclude.txt && tar -C '/etc/openclash/' -X '/tmp/oc_exclude.txt' -cz . 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Exclude-Cores-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Exclude-Cores-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
 	luci.ltn12.pump.all(reader, luci.http.write)
+	luci.sys.call("rm -rf /etc/openclash/openclash >/dev/null 2>&1")
 end
 
 function action_backup_only_config()
-	local config = luci.sys.call("cp /etc/config/openclash /etc/openclash/openclash >/dev/null 2>&1")
 	local reader = ltn12_popen("tar -C '/etc/openclash' -cz './config' 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Config-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Config-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
@@ -1415,12 +1359,11 @@ function action_backup_only_config()
 end
 
 function action_backup_only_core()
-	local config = luci.sys.call("cp /etc/config/openclash /etc/openclash/openclash >/dev/null 2>&1")
 	local reader = ltn12_popen("tar -C '/etc/openclash' -cz './core' 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Cores-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Cores-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
@@ -1428,12 +1371,11 @@ function action_backup_only_core()
 end
 
 function action_backup_only_rule()
-	local config = luci.sys.call("cp /etc/config/openclash /etc/openclash/openclash >/dev/null 2>&1")
 	local reader = ltn12_popen("tar -C '/etc/openclash' -cz './rule_provider' 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Only-Rule-Provider-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Only-Rule-Provider-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
@@ -1441,12 +1383,11 @@ function action_backup_only_rule()
 end
 
 function action_backup_only_proxy()
-	local config = luci.sys.call("cp /etc/config/openclash /etc/openclash/openclash >/dev/null 2>&1")
 	local reader = ltn12_popen("tar -C '/etc/openclash' -cz './proxy_provider' 2>/dev/null")
 
 	luci.http.header(
-		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Proxy-Provider-%s.tar.gz"' %{
-			os.date("%Y-%m-%d-%H-%M-%S")
+		'Content-Disposition', 'attachment; filename="Backup-OpenClash-Proxy-Provider-%s-%s-%s.tar.gz"' %{
+			device_name, device_arh, os.date("%Y-%m-%d-%H-%M-%S")
 		})
 
 	luci.http.prepare_content("application/x-targz")
